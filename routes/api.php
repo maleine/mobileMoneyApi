@@ -21,7 +21,7 @@ Route::post('/withdraw/confirm', [TransactionController::class, 'confirmWithdraw
 Route::get('/client/transactions', [TransactionController::class, 'getClientTransactions']);
 Route::post('/account/transfer', [TransactionController::class, 'transfer']);
 
-Route::post('/account/withdraw', [TransactionController::class, 'withdraw']);
+Route::post('/account/initiateWithdraw', [TransactionController::class, 'initiateWithdraw']);
 Route::middleware('auth:api')->group(function () {
 
 
@@ -29,6 +29,9 @@ Route::middleware('auth:api')->group(function () {
 
 
 });
+
+
+Route::post('/get-balance', [TransactionController::class, 'getBalance']);
 
 
 

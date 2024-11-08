@@ -40,6 +40,12 @@ return [
             'driver' => 'session',
             'provider' => 'users',
         ],
+
+        'api' => [
+        'driver' => 'token', // Utilisez 'token' pour le système par défaut Laravel ou 'jwt' si vous utilisez le package JWT
+        'provider' => 'users',
+        'hash' => false, // Utilisez true pour hacher le token ou laissez à false pour un token clair
+    ],
     ],
 
     /*

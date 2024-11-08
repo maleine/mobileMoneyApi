@@ -19,7 +19,8 @@ class Transaction extends Model
         'receiver_id',
         'sender_id',
         'status',
-        'expires_at'
+        'expires_at',
+        'transaction_id'
 
     ];
 

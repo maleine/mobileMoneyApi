@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Models\Transaction;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str; // Ajout de cette ligne pour utiliser Str
 
 class TransactionController extends Controller
 {
@@ -52,6 +53,8 @@ class TransactionController extends Controller
                 'type' => 'deposit',
                 'amount' => $request->amount,
                 'balance_after' => $client->balance + $request->amount,
+                'status' =>'effectue',
+                'transaction_id' => (string) Str::uuid(), // Utilisation de Str::uuid() pour générer un transaction_id unique
             ]);
 
             // Mise à jour du solde du client
@@ -102,11 +105,12 @@ class TransactionController extends Controller
                 'amount' => $amount,
                 'status' => 'en attente',
                 'balance_after' => $client->balance,
+                'transaction_id' => (string) Str::uuid(), // Utilisation de Str::uuid() pour générer un transaction_id unique
                 'expires_at' => now()->addMinutes(15),
             ]);
 
             DB::commit();
-            return response()->json(['message' => 'Retrait initié. En attente de validation du code PIN.', 'transaction_id' => $transaction->id], 201);
+            return response()->json(['message' => 'Retrait initié. En attente de validation du code PIN.', 'transaction_id' => $transaction->transaction_id], 201);
         } catch (\Exception $e) {
             DB::rollBack();
             return response()->json(['error' => 'Erreur lors de l\'initiation du retrait : ' . $e->getMessage()], 500);
@@ -114,47 +118,55 @@ class TransactionController extends Controller
     }
 
     public function confirmWithdraw(Request $request)
-    {
-        $request->validate([
-            'transaction_id' => 'required|integer',
-            'client_pin' => 'required|string|min:4|max:6',
+{
+    $request->validate([
+        'transaction_id' => 'required|string|uuid', // Assure que le transaction_id est un UUID valide
+        'client_pin' => 'required|string|min:4|max:6',
+    ]);
+
+    // Recherche de la transaction par UUID
+    $transaction = Transaction::where('transaction_id', $request->transaction_id)->first();
+
+    if (!$transaction || $transaction->status !== 'en attente') {
+        return response()->json(['error' => 'Transaction non trouvée ou déjà validée.'], 404);
+    }
+
+    // Vérification de l'expiration de la transaction
+    if ($transaction->expires_at < now()) {
+        return response()->json(['error' => 'Transaction expirée.'], 400);
+    }
+
+    // Recherche du client associé à la transaction
+    $client = User::find($transaction->client_id);
+
+    // Vérification du code PIN du client
+    if (!Hash::check($request->client_pin, $client->pin_code)) {
+        return response()->json(['error' => 'Code PIN incorrect.'], 400);
+    }
+
+    DB::beginTransaction();
+    try {
+        // Mise à jour du solde du client
+        $clientBalance = $client->balance - $transaction->amount;
+        User::where('id', $client->id)->update(['balance' => $clientBalance]);
+
+        // Mise à jour de la transaction avec le statut "effectué"
+        $transaction->update([
+            'status' => 'effectué',
+            'balance_after' => $clientBalance,
         ]);
 
-        $transaction = Transaction::find($request->transaction_id);
+        // Mise à jour du solde du manager
+        User::where('id', $transaction->manager_id)->increment('balance', $transaction->amount);
 
-        if (!$transaction || $transaction->status !== 'en attente') {
-            return response()->json(['error' => 'Transaction non trouvée ou déjà validée.'], 404);
-        }
-
-        if ($transaction->expires_at < now()) {
-            return response()->json(['error' => 'Transaction expirée.'], 400);
-        }
-
-        $client = User::find($transaction->client_id);
-
-        if (!Hash::check($request->client_pin, $client->pin_code)) {
-            return response()->json(['error' => 'Code PIN incorrect.'], 400);
-        }
-
-        DB::beginTransaction();
-        try {
-            $clientBalance = $client->balance - $transaction->amount;
-            User::where('id', $client->id)->update(['balance' => $clientBalance]);
-
-            $transaction->update([
-                'status' => 'effectué',
-                'balance_after' => $clientBalance,
-            ]);
-
-            User::where('id', $transaction->manager_id)->increment('balance', $transaction->amount);
-
-            DB::commit();
-            return response()->json(['message' => 'Retrait validé avec succès.', 'transaction' => $transaction], 200);
-        } catch (\Exception $e) {
-            DB::rollBack();
-            return response()->json(['error' => 'Erreur lors de la validation du retrait : ' . $e->getMessage()], 500);
-        }
+        DB::commit();
+        return response()->json(['message' => 'Retrait validé avec succès.', 'transaction' => $transaction], 200);
+    } catch (\Exception $e) {
+        DB::rollBack();
+        return response()->json(['error' => 'Erreur lors de la validation du retrait : ' . $e->getMessage()], 500);
     }
+}
+
 
     public function transfer(Request $request)
     {
@@ -208,6 +220,7 @@ class TransactionController extends Controller
                 'balance_after' => $sender->balance,
                 'sender_id' => $sender->id,
                 'receiver_id' => $receiver->id,
+                'transaction_id' => (string) Str::uuid(), // Utilisation de Str::uuid() pour générer un transaction_id unique
             ]);
             $senderTransaction->save();
 
@@ -222,36 +235,40 @@ class TransactionController extends Controller
                 'receiver_id' => $receiver->id,
                 'receiver_phone' => $receiver->phone_number,
                 'amount' => $request->amount,
-                'balance_after_sender' => $sender->balance,
-                'balance_after_receiver' => $receiver->balance,
-                'transaction_type' => 'transfer',
-                'timestamp' => now(),
+                'transaction_id' => $senderTransaction->transaction_id,
+                'status' => 'completed'
             ];
 
-            return response()->json(['message' => 'Transfert réussi', 'transaction' => $transactionDetails], 201);
+            return response()->json(['message' => 'Transfert effectué avec succès.', 'transaction_details' => $transactionDetails], 201);
+
         } catch (\Exception $e) {
             DB::rollBack();
-            return response()->json(['error' => 'Erreur lors du transfert: ' . $e->getMessage()], 500);
+            return response()->json(['error' => 'Erreur lors du transfert : ' . $e->getMessage()], 500);
         }
     }
 
-    public function getClientTransactions(Request $request)
+
+
+     public function getBalance(Request $request)
     {
         $request->validate([
-            'client_phone' => 'required|string',
+            'phone_number' => 'required|string',
+            'pin_code' => 'required|string|min:4|max:6',
         ]);
 
-        $client = User::where('phone_number', $request->client_phone)->first();
+        // Rechercher l'utilisateur par numéro de téléphone
+        $user = User::where('phone_number', $request->phone_number)->first();
 
-        if (!$client) {
-            return response()->json(['error' => 'Client non trouvé.'], 404);
+        if (!$user) {
+            return response()->json(['error' => 'Utilisateur non trouvé.'], 404);
         }
 
-        $transactions = Transaction::where('client_id', $client->id)
-            ->orWhere('sender_id', $client->id)
-            ->orWhere('receiver_id', $client->id)
-            ->get();
+        // Vérifier le code PIN
+        if (!Hash::check($request->pin_code, $user->pin_code)) {
+            return response()->json(['error' => 'Code PIN incorrect.'], 401);
+        }
 
-        return response()->json(['transactions' => $transactions], 200);
+        // Si l'utilisateur et le code PIN sont valides, retourner le solde
+        return response()->json(['balance' => $user->balance], 200);
     }
 }
